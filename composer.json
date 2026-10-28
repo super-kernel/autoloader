@@ -1,0 +1,33 @@
+{
+    "name": "super-kernel/autoloader",
+    "description": "Factory-bootstrapped classmap autoloading and interception for SuperKernel.",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.4.27 <8.5",
+        "super-kernel/attribute": "dev-main",
+        "super-kernel/composer": "dev-main",
+        "super-kernel/contract": "dev-main"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.95.27",
+        "phpunit/phpunit": "^13.4.3"
+    },
+    "autoload": {
+        "psr-4": {
+            "SuperKernel\\Autoloader\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "SuperKernel\\Autoloader\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "format": "@php vendor/bin/php-cs-fixer fix --show-progress=bar --no-ansi",
+        "format:check": "@php vendor/bin/php-cs-fixer check --show-progress=bar --no-ansi --diff",
+        "test": "@php vendor/bin/phpunit"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

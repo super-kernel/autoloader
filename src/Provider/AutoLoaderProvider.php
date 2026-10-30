@@ -41,27 +41,24 @@ final readonly class AutoLoaderProvider
 
         try {
             $loader = new AutoLoader($classMap);
-            self::replaceSplStack([
-                $loader,
-            ]);
+
+            foreach (spl_autoload_functions() as $registered) {
+                spl_autoload_unregister($registered);
+            }
+
+            spl_autoload_register($loader);
         } catch (Throwable $failure) {
-            self::replaceSplStack($previousStack);
+            foreach (spl_autoload_functions() as $registered) {
+                spl_autoload_unregister($registered);
+            }
+
+            foreach ($previousStack as $previousLoader) {
+                spl_autoload_register($previousLoader);
+            }
 
             throw $failure;
         }
 
         return $loader;
-    }
-
-    /** @param list<callable> $loaders */
-    private static function replaceSplStack(array $loaders): void
-    {
-        foreach (spl_autoload_functions() as $registered) {
-            spl_autoload_unregister($registered);
-        }
-
-        foreach ($loaders as $loader) {
-            spl_autoload_register($loader);
-        }
     }
 }

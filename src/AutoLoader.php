@@ -10,7 +10,6 @@ use SuperKernel\Autoloader\Exception\UnloadedClassMapException;
 use SuperKernel\Contract\AutoLoaderInterface;
 
 use function array_any;
-use function array_values;
 use function class_exists;
 use function count;
 use function enum_exists;
@@ -26,6 +25,12 @@ use function sprintf;
 use function str_contains;
 use function trait_exists;
 
+/**
+ * Loads construction-time classmap entries as an SPL autoload callback.
+ *
+ * Symbol checks, pruning, and SPL self-detection use only built-in functions: after takeover this instance may be the
+ * only loader, so it could not resolve a helper class outside its classmap or one that its own loading path requires.
+ */
 final class AutoLoader implements AutoLoaderInterface
 {
     /**
@@ -72,7 +77,12 @@ final class AutoLoader implements AutoLoaderInterface
                 ));
             }
 
-            if (self::isSymbolLoaded($class)) {
+            if (
+                class_exists($class, false)
+                || interface_exists($class, false)
+                || trait_exists($class, false)
+                || enum_exists($class, false)
+            ) {
                 continue;
             }
 
@@ -89,44 +99,63 @@ final class AutoLoader implements AutoLoaderInterface
         $this->loading[$class] = true;
 
         try {
-            $this->pruneLoadedClassMap();
-
-            if (self::isSymbolLoaded($class)) {
-                return;
-            }
-
             $file = $this->classMap[$class] ?? null;
 
-            if (null === $file) {
+            if (
+                null === $file
+                || class_exists($class, false)
+                || interface_exists($class, false)
+                || trait_exists($class, false)
+                || enum_exists($class, false)
+            ) {
                 return;
             }
 
             foreach ($this->interceptors as $interceptor) {
                 $intercepted = $interceptor($class, $file);
-                $this->pruneLoadedClassMap();
 
-                if (true === $intercepted || self::isSymbolLoaded($class)) {
+                if (
+                    true === $intercepted
+                    || class_exists($class, false)
+                    || interface_exists($class, false)
+                    || trait_exists($class, false)
+                    || enum_exists($class, false)
+                ) {
                     return;
                 }
             }
 
             if (is_file($file)) {
                 require $file;
-                $this->pruneLoadedClassMap();
-
-                if (self::isSymbolLoaded($class)) {
-                    return;
-                }
             }
         } finally {
             unset($this->loading[$class]);
-            $this->pruneLoadedClassMap();
+
+            foreach ($this->classMap as $mappedClass => $_file) {
+                if (
+                    class_exists($mappedClass, false)
+                    || interface_exists($mappedClass, false)
+                    || trait_exists($mappedClass, false)
+                    || enum_exists($mappedClass, false)
+                ) {
+                    unset($this->classMap[$mappedClass]);
+                }
+            }
         }
     }
 
     public function getClassMap(): array
     {
-        $this->pruneLoadedClassMap();
+        foreach ($this->classMap as $mappedClass => $_file) {
+            if (
+                class_exists($mappedClass, false)
+                || interface_exists($mappedClass, false)
+                || trait_exists($mappedClass, false)
+                || enum_exists($mappedClass, false)
+            ) {
+                unset($this->classMap[$mappedClass]);
+            }
+        }
 
         return $this->classMap;
     }
@@ -152,7 +181,17 @@ final class AutoLoader implements AutoLoaderInterface
 
     public function isRegistered(): bool
     {
-        return array_any(self::splStack(), fn($loader) => $this->isSelfLoader($loader));
+        return array_any(
+            spl_autoload_functions(),
+            fn(mixed $loader): bool => $loader === $this
+                || (
+                    is_array($loader)
+                    && 2 === count($loader)
+                    && is_object($loader[0])
+                    && $loader[0] === $this
+                    && '__invoke' === $loader[1]
+                ),
+        );
     }
 
     /**
@@ -161,14 +200,32 @@ final class AutoLoader implements AutoLoaderInterface
      */
     public function unregister(): void
     {
-        $this->pruneLoadedClassMap();
+        foreach ($this->classMap as $mappedClass => $_file) {
+            if (
+                class_exists($mappedClass, false)
+                || interface_exists($mappedClass, false)
+                || trait_exists($mappedClass, false)
+                || enum_exists($mappedClass, false)
+            ) {
+                unset($this->classMap[$mappedClass]);
+            }
+        }
 
         if ([] !== $this->classMap) {
             throw new UnloadedClassMapException($this->classMap);
         }
 
-        foreach (self::splStack() as $loader) {
-            if (!$this->isSelfLoader($loader)) {
+        foreach (spl_autoload_functions() as $loader) {
+            $isSelfLoader = $loader === $this
+                || (
+                    is_array($loader)
+                    && 2 === count($loader)
+                    && is_object($loader[0])
+                    && $loader[0] === $this
+                    && '__invoke' === $loader[1]
+                );
+
+            if (!$isSelfLoader) {
                 continue;
             }
 
@@ -179,42 +236,5 @@ final class AutoLoader implements AutoLoaderInterface
 
         $this->interceptors = [];
         $this->loading = [];
-    }
-
-    private function pruneLoadedClassMap(): void
-    {
-        foreach ($this->classMap as $class => $_file) {
-            if (self::isSymbolLoaded($class)) {
-                unset($this->classMap[$class]);
-            }
-        }
-    }
-
-    private static function isSymbolLoaded(string $class): bool
-    {
-        return class_exists($class, false)
-            || interface_exists($class, false)
-            || trait_exists($class, false)
-            || enum_exists($class, false);
-    }
-
-    /**
-     * @return list<callable>
-     */
-    private static function splStack(): array
-    {
-        return array_values(spl_autoload_functions() ?: []);
-    }
-
-    private function isSelfLoader(mixed $loader): bool
-    {
-        return $loader === $this
-            || (
-                is_array($loader)
-                && 2 === count($loader)
-                && is_object($loader[0])
-                && $loader[0] === $this
-                && '__invoke' === $loader[1]
-            );
     }
 }

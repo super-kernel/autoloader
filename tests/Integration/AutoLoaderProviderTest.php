@@ -17,7 +17,7 @@ use SuperKernel\Autoloader\Exception\UnloadedClassMapException;
 use SuperKernel\Autoloader\Provider\AutoLoaderProvider;
 use SuperKernel\Autoloader\Tests\Fixture\CancelledInterceptorClass;
 use SuperKernel\Autoloader\Tests\Fixture\ReplacementClass;
-use SuperKernel\Composer\Enum\PackageType;
+use SuperKernel\Composer\Constants\PackageType;
 use SuperKernel\Composer\Manager\PackageManager;
 use SuperKernel\Composer\Model\Package;
 use SuperKernel\Composer\Model\ScanRuleSet;

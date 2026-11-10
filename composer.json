@@ -5,9 +5,9 @@
     "license": "MIT",
     "require": {
         "php": ">=8.4.27 <8.5",
-        "super-kernel/attribute": "dev-main",
-        "super-kernel/composer": "dev-main",
-        "super-kernel/contract": "dev-main"
+        "super-kernel/attribute": "self.version",
+        "super-kernel/composer": "self.version",
+        "super-kernel/contract": "self.version"
     },
     "require-dev": {
         "friendsofphp/php-cs-fixer": "^3.95.27",

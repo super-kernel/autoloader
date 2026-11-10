@@ -17,12 +17,10 @@ use SuperKernel\Autoloader\Exception\UnloadedClassMapException;
 use SuperKernel\Autoloader\Provider\AutoLoaderProvider;
 use SuperKernel\Autoloader\Tests\Fixture\CancelledInterceptorClass;
 use SuperKernel\Autoloader\Tests\Fixture\ReplacementClass;
-use SuperKernel\Composer\Constants\PackageType;
-use SuperKernel\Composer\Manager\PackageManager;
-use SuperKernel\Composer\Model\Package;
-use SuperKernel\Composer\Model\ScanRuleSet;
 use SuperKernel\Contract\AutoLoaderInterface;
 use SuperKernel\Contract\PackageManagerInterface;
+use SuperKernel\Metadata\Manager\PackageManager;
+use SuperKernel\Metadata\Model\Package;
 use Throwable;
 
 use function class_exists;
@@ -181,15 +179,7 @@ final class AutoLoaderProviderTest extends TestCase
     /** @param array<string, array<class-string, non-empty-string>> $classMaps */
     private function packages(array $classMaps): PackageManager
     {
-        $root = new Package(
-            'fixture/application',
-            null,
-            null,
-            PackageType::Root,
-            false,
-            dirname(__DIR__, 2),
-            ScanRuleSet::empty(),
-        );
+        $root = new Package('fixture/application', null, null, 'project', dirname(__DIR__, 2));
         $packages = [];
 
         foreach ($classMaps as $name => $_classes) {
@@ -197,15 +187,7 @@ final class AutoLoaderProviderTest extends TestCase
                 continue;
             }
 
-            $packages[] = new Package(
-                $name,
-                '1.0.0',
-                'fixture-reference',
-                PackageType::Library,
-                false,
-                dirname(__DIR__, 2),
-                ScanRuleSet::empty(),
-            );
+            $packages[] = new Package($name, '1.0.0', 'fixture-reference', 'library', dirname(__DIR__, 2));
         }
 
         return new PackageManager($root, $packages, $classMaps);

@@ -4,84 +4,110 @@
 
 # SuperKernel Autoloader
 
-`super-kernel/autoloader` provides a process-local SPL autoloader whose classmap is fixed at construction.
+`super-kernel/autoloader` replaces every registered autoloader of a process with one class loader whose class map is fixed when it is created, from the metadata of `skernel build`, and lets code intercept the loading of a mapped class.
 
-## Registration and ownership
+## Installation
 
-Resolve `SuperKernel\Contract\AutoLoaderInterface` through the DI container. Resolution:
-
-1. combines the classmaps of every Composer package, including Root; earlier packages win collisions, so Root has priority;
-2. constructs `AutoLoader` with that classmap while the previous loaders remain available;
-3. unregisters every current SPL callback and registers the new loader as the sole entry.
-
-A successful takeover permanently discards previous loaders. A failure propagates after the original SPL stack is restored; classes and side effects from files loaded before the failure cannot be undone. During takeover, classes load from the combined map by requiring mapped files directly, without a file-existence check or suppression of native loading errors.
-
-Each resolution creates a fresh loader; the container owns its retention, and `AutoLoader` keeps no static instance. Register separately in each persistent-runtime worker process.
-
-Constructing `new AutoLoader($classMap)` directly validates and prepares the map without changing SPL; only container resolution performs the takeover. `addInterceptor()` only mutates the selected instance. It does not register it or remove callbacks added later by other code.
-
-## Classmap behavior
-
-Classmap keys must be non-empty class names. Values must be non-empty file paths, and neither may contain a null byte. Each mapping is checked independently with autoload disabled; already declared classes, interfaces, traits, and enums are skipped.
-
-Inspect pending mappings through the registered instance:
-
-```php
-$pending = $loader->getClassMap();
+```bash
+composer require super-kernel/autoloader
 ```
 
-`getClassMap()` returns the pending mappings by value. Changing the input array or the returned array does not change the loader. After any classmap file or interceptor declares symbols, all newly declared mappings are removed, including additional classes declared by the same file.
+The package needs the metadata that `skernel build` generates, which `super-kernel/metadata` restores, and a SuperKernel container, such as `super-kernel/di`, to resolve the loader. `super-kernel/aop` resolves it when an application starts.
 
-Relative file paths are retained as supplied and therefore follow PHP's current working-directory rules. Absolute paths are recommended for persistent processes. Missing mapped files do not fall through to another loader and remain visible in the pending classmap.
+## What it provides
 
-## Interception
+- One SPL autoloader that loads the classes of the root and every installed package from a single class map, the root's classes first.
+- The pending class map: every mapped class that is not loaded yet.
+- Interceptors that run before a mapped file is included and may load the class themselves.
+- Removal of the loader once every mapped class has loaded.
 
-Interceptors run in registration order before a mapped file is included. They receive the requested class name and mapped file path:
+It does not:
 
-```php
-$interceptorId = $loader->addInterceptor(
-    static function (string $class, string $file): bool {
-        $generatedFile = build_aop_version($class, $file);
-        require $generatedFile;
+- fall back to Composer's or any other loader: a takeover removes them for the rest of the process;
+- accept new mappings after it is created;
+- load a class that is not in the class map.
 
-        return true;
-    },
-);
-```
+## Quick start
 
-Returning `false` continues to the next interceptor and then normal loading. Returning `true` suppresses later interceptors and the mapped file include. An interceptor that takes over loading is responsible for declaring the requested symbol. A handled request that leaves the symbol undeclared remains in the classmap.
-
-Cancel an interceptor with its positive integer identifier:
+Any class of the project is in the class map. Save one as `src/Billing/Invoice.php`:
 
 ```php
-$loader->removeInterceptor($interceptorId);
-```
+<?php
 
-Interceptors are only called for classmap hits because an unmapped class has no actionable file path.
+declare(strict_types=1);
 
-## Safe removal
+namespace Src\Billing;
 
-Before a persistent runtime starts its main service, remove the loader only after all mapped symbols have loaded:
-
-```php
-use SuperKernel\Autoloader\Exception\UnloadedClassMapException;
-
-try {
-    $loader->unregister();
-} catch (UnloadedClassMapException $exception) {
-    $pending = $exception->classMap();
-    $firstPendingClass = $exception->firstClassName();
+final class Invoice
+{
 }
 ```
 
-When the classmap is empty, `unregister()` removes only this component's callable. It never restores loaders discarded during takeover; if no loader was registered later, the SPL stack becomes empty. Loaders registered externally after takeover remain untouched. When mappings remain, `unregister()` changes nothing and throws `UnloadedClassMapException` with the complete pending classmap and first class name.
+Resolve the loader, watch it load the class, and see the class leave the pending map. Save the script as `bin/loader.php`:
 
-## Errors
+```php
+<?php
 
-All component exceptions implement `ClassLoaderExceptionInterface`:
+declare(strict_types=1);
 
-- `InvalidClassMapException` reports invalid classmap keys or paths during construction;
-- `ClassLoaderRegistrationException` reports a self-removal failure;
-- `UnloadedClassMapException` prevents unsafe removal while mappings remain.
+use Src\Billing\Invoice;
+use SuperKernel\Context\ApplicationContext;
+use SuperKernel\Contract\AutoLoaderInterface;
 
-Code typed against `AutoLoaderInterface` can catch removal failures as `RuntimeException`.
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+$loader = ApplicationContext::getContainer()->get(AutoLoaderInterface::class);
+
+var_dump($loader->isRegistered(), count(spl_autoload_functions()));
+
+$loader->addInterceptor(static function (string $class, string $file): bool {
+    echo 'Loading ', $class, ' from ', basename($file), PHP_EOL;
+
+    return false;
+});
+
+new Invoice();
+
+var_dump(isset($loader->getClassMap()[Invoice::class]));
+```
+
+Build the project and run the script:
+
+```bash
+skernel build
+php bin/loader.php
+```
+
+It prints:
+
+```text
+bool(true)
+int(1)
+Loading Src\Billing\Invoice from Invoice.php
+bool(false)
+```
+
+## Public surface
+
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `SuperKernel\Contract\AutoLoaderInterface` | Interface | The loader: pending class map, interceptors, and removal; resolving it from the container replaces every registered autoloader. |
+| `SuperKernel\Autoloader\Provider\AutoLoaderProvider` | Class | The factory provider of `AutoLoaderInterface`; it builds the class map from the package metadata and performs the takeover. |
+| `SuperKernel\Autoloader\AutoLoader` | Class | The loader; `new AutoLoader($classMap)` creates one without registering it, which is useful in tests. |
+
+## Behavior to know
+
+- Resolving `AutoLoaderInterface` removes every registered autoloader, including Composer's, and registers the new loader alone. The removed loaders are never restored. If creating the loader fails, the previous autoloaders are restored and the exception propagates.
+- A class that is not in the class map, or whose mapped file is missing, is not loaded by anything.
+- The class map comes from the build metadata: run `skernel build` again after adding, removing, or moving a class, or start with `skernel run`, which builds first.
+- `unregister()` raises `SuperKernel\Autoloader\Exception\UnloadedClassMapException`, with a message such as `Class "Src\Billing\Invoice" has not been loaded.`, while any mapped class is not loaded yet, and changes nothing.
+- `new AutoLoader($classMap)` raises `SuperKernel\Autoloader\Exception\InvalidClassMapException` for an empty class name or path, or one with a null byte.
+- Each resolution creates a new loader, which a container keeps. In a long-running runtime, resolve the loader separately in each worker process.
+
+## Documentation
+
+The developer documentation describes the takeover, the class map, interceptors, safe removal, and the errors and their messages with complete examples: [SuperKernel Autoloader](https://github.com/super-kernel/.github/blob/main/docs/components/autoloader.md).
+
+## License
+
+Released under the MIT License. See [LICENSE](LICENSE).

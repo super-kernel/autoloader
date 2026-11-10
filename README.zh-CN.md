@@ -4,84 +4,110 @@
 
 # SuperKernel Autoloader
 
-`super-kernel/autoloader` 提供一个进程内的 SPL 自动加载器，其类图在构造时固定。
+`super-kernel/autoloader` 用一个类加载器替换进程中所有已注册的自动加载器；该加载器的类映射在创建时根据 `skernel build` 的元数据确定，并允许代码拦截已映射类的加载。
 
-## 注册与归属
+## 安装
 
-通过 DI 容器解析 `SuperKernel\Contract\AutoLoaderInterface`。解析过程会：
-
-1. 合并所有 Composer 包（包括 Root）的类图；冲突时先出现的包优先，因此 Root 优先级最高；
-2. 在之前的加载器仍然可用时，用合并后的类图构造 `AutoLoader`；
-3. 注销当前所有 SPL 回调，并把新加载器注册为唯一的条目。
-
-接管成功后，之前的加载器会被永久丢弃。失败时会先恢复原来的 SPL 栈，再向外传播错误；失败之前已加载文件中的类和副作用无法撤销。接管期间，类通过直接 require 合并类图中映射的文件来加载，不检查文件是否存在，也不抑制原生加载错误。
-
-每次解析都会创建一个新的加载器；由容器负责保留它，`AutoLoader` 不保存静态实例。在常驻运行时中，每个工作进程都要单独注册。
-
-直接构造 `new AutoLoader($classMap)` 只会校验并准备类图，不会改变 SPL；只有通过容器解析才会执行接管。`addInterceptor()` 只修改所选的实例，不会注册它，也不会移除其他代码之后添加的回调。
-
-## 类图行为
-
-类图的键必须是非空类名，值必须是非空文件路径，两者都不能包含空字节。每条映射都在禁用自动加载的情况下单独检查；已经声明的类、接口、trait 和枚举会被跳过。
-
-通过已注册的实例查看待加载的映射：
-
-```php
-$pending = $loader->getClassMap();
+```bash
+composer require super-kernel/autoloader
 ```
 
-`getClassMap()` 按值返回待加载的映射。修改输入数组或返回的数组都不会改变加载器。任何类图文件或拦截器声明了符号之后，所有新声明的映射都会被移除，包括同一个文件声明的其他类。
+本包需要 `skernel build` 生成、由 `super-kernel/metadata` 恢复的元数据，以及一个用来解析加载器的 SuperKernel 容器，例如 `super-kernel/di`。`super-kernel/aop` 会在应用启动时解析它。
 
-相对文件路径按原样保留，因此遵循 PHP 当前工作目录的规则。常驻进程建议使用绝对路径。缺失的映射文件不会转交给其他加载器，并会继续留在待加载的类图中。
+## 提供的能力
 
-## 拦截
+- 一个 SPL 自动加载器，从同一个类映射中加载根包和所有已安装包的类，根包的类优先。
+- 待加载的类映射：所有尚未加载的已映射类。
+- 在包含已映射文件之前运行、并且可以自行加载该类的拦截器。
+- 在所有已映射类都加载完成之后移除加载器。
 
-拦截器在映射文件被 include 之前按注册顺序运行。它们接收请求的类名和映射的文件路径：
+它不会：
 
-```php
-$interceptorId = $loader->addInterceptor(
-    static function (string $class, string $file): bool {
-        $generatedFile = build_aop_version($class, $file);
-        require $generatedFile;
+- 退回到 Composer 或其他任何加载器：接管会在进程的剩余时间里移除它们；
+- 在创建之后接受新的映射；
+- 加载不在类映射中的类。
 
-        return true;
-    },
-);
-```
+## 快速开始
 
-返回 `false` 会继续交给下一个拦截器，然后是正常加载。返回 `true` 会跳过之后的拦截器，也不再 include 映射文件。接管加载的拦截器负责声明所请求的符号。已处理但未声明该符号的请求会继续留在类图中。
-
-用正整数标识取消拦截器：
+项目中的任何类都在类映射中。将一个类保存为 `src/Billing/Invoice.php`：
 
 ```php
-$loader->removeInterceptor($interceptorId);
-```
+<?php
 
-拦截器只会在命中类图时被调用，因为未映射的类没有可操作的文件路径。
+declare(strict_types=1);
 
-## 安全移除
+namespace Src\Billing;
 
-在常驻运行时启动主服务之前，只有当所有映射的符号都已加载后才能移除加载器：
-
-```php
-use SuperKernel\Autoloader\Exception\UnloadedClassMapException;
-
-try {
-    $loader->unregister();
-} catch (UnloadedClassMapException $exception) {
-    $pending = $exception->classMap();
-    $firstPendingClass = $exception->firstClassName();
+final class Invoice
+{
 }
 ```
 
-类图为空时，`unregister()` 只移除本组件的回调。它从不恢复接管时丢弃的加载器；如果之后没有注册其他加载器，SPL 栈会变为空。接管之后由外部注册的加载器保持不变。仍有映射未加载时，`unregister()` 不做任何修改，并抛出 `UnloadedClassMapException`，其中包含完整的待加载类图和第一个类名。
+解析加载器，观察它加载该类，并看到该类离开待加载映射。将脚本保存为 `bin/loader.php`：
 
-## 错误
+```php
+<?php
 
-本组件的所有异常都实现 `ClassLoaderExceptionInterface`：
+declare(strict_types=1);
 
-- `InvalidClassMapException` 在构造期间报告无效的类图键或路径；
-- `ClassLoaderRegistrationException` 报告移除自身失败；
-- `UnloadedClassMapException` 在仍有映射时阻止不安全的移除。
+use Src\Billing\Invoice;
+use SuperKernel\Context\ApplicationContext;
+use SuperKernel\Contract\AutoLoaderInterface;
 
-面向 `AutoLoaderInterface` 编写的代码可以把移除失败作为 `RuntimeException` 捕获。
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+$loader = ApplicationContext::getContainer()->get(AutoLoaderInterface::class);
+
+var_dump($loader->isRegistered(), count(spl_autoload_functions()));
+
+$loader->addInterceptor(static function (string $class, string $file): bool {
+    echo 'Loading ', $class, ' from ', basename($file), PHP_EOL;
+
+    return false;
+});
+
+new Invoice();
+
+var_dump(isset($loader->getClassMap()[Invoice::class]));
+```
+
+构建项目并运行脚本：
+
+```bash
+skernel build
+php bin/loader.php
+```
+
+它会打印：
+
+```text
+bool(true)
+int(1)
+Loading Src\Billing\Invoice from Invoice.php
+bool(false)
+```
+
+## 公开接口
+
+| 名称 | 类别 | 用途 |
+| --- | --- | --- |
+| `SuperKernel\Contract\AutoLoaderInterface` | 接口 | 加载器：待加载的类映射、拦截器和移除；从容器解析它会替换所有已注册的自动加载器。 |
+| `SuperKernel\Autoloader\Provider\AutoLoaderProvider` | 类 | `AutoLoaderInterface` 的工厂提供者；它根据包元数据构建类映射并完成接管。 |
+| `SuperKernel\Autoloader\AutoLoader` | 类 | 加载器；`new AutoLoader($classMap)` 创建一个不注册的加载器，可用于测试。 |
+
+## 需要了解的行为
+
+- 解析 `AutoLoaderInterface` 会移除所有已注册的自动加载器（包括 Composer 的），并只注册新的加载器。被移除的加载器永远不会被恢复。如果创建加载器失败，之前的自动加载器会被恢复，异常向外传播。
+- 不在类映射中的类，或者其映射文件缺失的类，不会被任何加载器加载。
+- 类映射来自构建元数据：添加、删除或移动类之后，请重新运行 `skernel build`，或者用会先构建的 `skernel run` 启动。
+- 只要还有已映射的类尚未加载，`unregister()` 就会抛出 `SuperKernel\Autoloader\Exception\UnloadedClassMapException`（消息例如 `Class "Src\Billing\Invoice" has not been loaded.`），并且不做任何更改。
+- 对于为空或包含空字节的类名或路径，`new AutoLoader($classMap)` 抛出 `SuperKernel\Autoloader\Exception\InvalidClassMapException`。
+- 每次解析都会创建一个新的加载器，由容器保留。在长时间运行的运行时中，请在每个工作进程中分别解析加载器。
+
+## 文档
+
+开发者文档用完整示例介绍接管、类映射、拦截器、安全移除，以及各种错误及其消息：[SuperKernel Autoloader](https://github.com/super-kernel/.github/blob/main/docs/components/autoloader.zh-CN.md)。
+
+## 许可证
+
+基于 MIT 许可证发布，详见 [LICENSE](LICENSE)。
